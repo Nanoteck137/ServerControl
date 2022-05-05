@@ -1,87 +1,95 @@
-use sysinfo::{ System, SystemExt, ProcessorExt };
-use serde::{ Serialize, Deserialize };
+#![allow(dead_code)]
 
-#[derive(Serialize, Deserialize, Debug)]
-struct ProcessorInfo {
-    name: String,
-    usage: f32,
-    frequency: u64,
-    vendor_id: String,
-    brand: String,
+use sysinfo::SystemExt;
+use sysinfo::System;
+use serde::{ Deserialize };
+
+mod system_info;
+
+#[derive(Debug)]
+enum Error {
+    NoObjectWithId{ status_code: reqwest::StatusCode, id: String },
+    FailedToUpdate(reqwest::StatusCode),
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-struct SystemInfo {
-    os: String,
-    arch: String,
-    hostname: String,
-    global_processor_info: ProcessorInfo,
-    processors: Vec<ProcessorInfo>,
+type Result<T> = std::result::Result<T, Error>;
 
-    total_memory: u64,
-    free_memory: u64,
-    used_memory: u64,
-    total_swap: u64,
-    free_swap: u64,
-    used_swap: u64,
+#[derive(Deserialize, Debug)]
+struct ApiCreatedResponse {
+    #[serde(rename = "objectId")]
+    object_id: String,
+    #[serde(rename = "createdAt")]
+    created_at: String,
 }
 
-fn main() {
-    let mut sys = System::new_all();
-    sys.refresh_all();
+struct ServerObject {
+    object_id: String,
+}
 
-    println!("---- SYSTEM ----");
-    println!("System Name: {:?}", sys.name());
-    println!("System kernel version: {:?}", sys.kernel_version());
-    println!("System os version: {:?}", sys.os_version());
-    println!("System os version: {:?}", sys.long_os_version());
-    println!("System host name: {:?}", sys.host_name());
+impl ServerObject {
+    fn update_data(&mut self, data: String) -> Result<()> {
+        // TODO(patrik): Should this client be cached?
+        let client = reqwest::blocking::Client::new();
 
-    println!("{:#?}", sys);
-    println!("{}", std::env::consts::OS);
-    println!("{}", std::env::consts::ARCH);
+        let id = &self.object_id;
 
-    let mut processors = Vec::new();
+        // TODO(patrik): This URL should change to enviroment variable
+        let url =
+            format!("http://localhost:3000/parse/classes/clients/{}", id);
+        // TODO(patrik): Map this error (remove unwrap)
+        // TODO(patrik): X-Parse-Application-Id should be env variable
+        let res = client.put(url)
+            .header("X-Parse-Application-Id", "servercontrol")
+            .header("Content-Type", "application/json")
+            .body(data)
+            .send()
+            .unwrap();
 
-    for processor in sys.processors() {
-        processors.push(ProcessorInfo {
-            name: processor.name().to_owned(),
-            usage: processor.cpu_usage(),
-            frequency: processor.frequency(),
-            vendor_id: processor.vendor_id().to_owned(),
-            brand: processor.brand().trim().to_owned(),
+        if res.status() != reqwest::StatusCode::OK {
+            return Err(Error::FailedToUpdate(res.status()));
+        }
+
+        Ok(())
+    }
+}
+
+fn obtain_object() -> Result<ServerObject> {
+    let id = std::fs::read_to_string("id.txt").unwrap();
+
+    let client = reqwest::blocking::Client::new();
+
+    // TODO(patrik): This URL should change to enviroment variable
+    let url = format!("http://localhost:3000/parse/classes/clients/{}", id);
+    // TODO(patrik): Map this error (remove unwrap)
+    let res = client.get(url)
+        .header("X-Parse-Application-Id", "servercontrol")
+        .send()
+        .unwrap();
+    if res.status() != reqwest::StatusCode::OK {
+        return Err(Error::NoObjectWithId {
+            status_code: res.status(),
+            id: id
         });
     }
 
-    let global_processor_info = ProcessorInfo {
-        name: sys.global_processor_info().name().to_owned(),
-        usage: sys.global_processor_info().cpu_usage(),
-        frequency: sys.global_processor_info().frequency(),
-        vendor_id: sys.global_processor_info().vendor_id().to_owned(),
-        brand: sys.global_processor_info().brand().trim().to_owned(),
-    };
+    Ok(ServerObject {
+        object_id: id
+    })
+}
 
-    let system_info = SystemInfo {
-        os: std::env::consts::OS.to_owned(),
-        arch: std::env::consts::ARCH.to_owned(),
-        hostname: sys.host_name().unwrap_or("".to_owned()),
+fn main() {
+    let mut obj = obtain_object().unwrap();
 
-        global_processor_info,
-        processors,
+    loop {
+        println!("Update");
+        let system_info = system_info::get_system_info();
+        let data = serde_json::to_string(&system_info).unwrap();
 
-        total_memory: sys.total_memory(),
-        free_memory: sys.free_memory(),
-        used_memory: sys.used_memory(),
-        total_swap: sys.total_swap(),
-        free_swap: sys.free_swap(),
-        used_swap: sys.used_swap(),
-    };
+        obj.update_data(data).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+    }
 
-    let s = serde_json::to_string(&system_info).unwrap();
-    println!("JSON: {}", s);
-
-    println!("Hello, world!");
-
+    /*
     let client = reqwest::blocking::Client::new();
 
     let res = client.post("http://localhost:3000/parse/classes/clients")
@@ -91,5 +99,8 @@ fn main() {
         .send()
         .unwrap();
 
-    println!("Res: {:?}", res.text());
+    let res = res.text().unwrap();
+    let res = serde_json::from_str::<ApiCreatedResponse>(&res);
+    println!("Res: {:?}", res);
+    */
 }
